@@ -9,15 +9,18 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -85,11 +88,27 @@ class BackgroundLocationService : Service() {
         }
 
         val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        // Android 10+ (API 29) requires foregroundServiceType in startForeground.
+        // Android 14+ (API 34) enforces it strictly. Android 15 will crash without it.
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            )
+        } catch (e: Exception) {
+            // If startForeground fails (e.g. missing permission), stop gracefully
+            e.printStackTrace()
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         startMocking()
 
-        return START_STICKY
+        // Use START_NOT_STICKY so Android does NOT restart the service automatically
+        // if it's killed (which could crash if location permission was revoked).
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -97,7 +116,13 @@ class BackgroundLocationService : Service() {
     }
 
     override fun onDestroy() {
-        unregisterReceiver(updateReceiver)
+        mockJob?.cancel()
+        mockJob = null
+        try {
+            unregisterReceiver(updateReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Receiver was not registered
+        }
         super.onDestroy()
     }
 
@@ -146,18 +171,20 @@ class BackgroundLocationService : Service() {
         notificationManager.notify(NOTIFICATION_ID, createNotification())
     }
 
+    private val serviceScope = CoroutineScope(Dispatchers.Default)
+
     private fun startMocking() {
         setupTestProvider(LocationManager.GPS_PROVIDER)
         setupTestProvider(LocationManager.NETWORK_PROVIDER)
         setupTestProvider("fused")
 
         mockJob?.cancel()
-        mockJob = CoroutineScope(Dispatchers.Default).launch {
+        mockJob = serviceScope.launch {
             while (isActive) {
                 publishLocation(LocationManager.GPS_PROVIDER)
                 publishLocation(LocationManager.NETWORK_PROVIDER)
                 publishLocation("fused")
-                
+
                 delay(1000)
             }
         }
