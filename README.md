@@ -117,12 +117,6 @@ Silakan membuat:
 
 ---
 
-## 📄 License
-
-Project ini menggunakan lisensi **MIT**.
-
----
-
 <div align="center">
 
 Fueled by ☕
